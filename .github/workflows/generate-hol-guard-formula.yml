@@ -40,10 +40,10 @@ jobs:
           # Ensure the release artifact is exactly the one independently verified.
           grep -q "sha256 \"$HOL_GUARD_SHA256\"" "$formula"
 
-          # Homebrew stops parsing command options after the formula argument.
-          # Put the platform-wheel exclusion first, then add the verified wheel
-          # resource explicitly below.
-          brew update-python-resources --exclude-packages=onnxruntime hol-guard
+          # The command parser models this as a comma-array argument rather than
+          # a conventional --flag=value option. Exclude the platform-only wheel
+          # here and add verified architecture-specific wheels below.
+          brew update-python-resources --exclude-packages onnxruntime hol-guard
 
           FORMULA_PATH="$formula" python3 <<'PY'
           import json
