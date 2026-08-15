@@ -18,7 +18,7 @@ jobs:
       HOL_GUARD_VERSION: 2.2.88
       HOL_GUARD_URL: https://github.com/hashgraph-online/hol-guard/releases/download/v2.2.88/hol_guard-2.2.88.tar.gz
       HOL_GUARD_SHA256: 6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc
-      ONNXRUNTIME_VERSION: 1.27.0
+      ONNXRUNTIME_VERSION: 1.28.0
     steps:
       - uses: actions/checkout@v5
         with:
@@ -40,9 +40,10 @@ jobs:
           # Ensure the release artifact is exactly the one independently verified.
           grep -q "sha256 \"$HOL_GUARD_SHA256\"" "$formula"
 
-          # ONNX Runtime only publishes platform wheels. Generate every source-backed
-          # dependency normally and add the verified wheel explicitly below.
-          brew update-python-resources hol-guard --exclude-packages=onnxruntime
+          # Homebrew stops parsing command options after the formula argument.
+          # Put the platform-wheel exclusion first, then add the verified wheel
+          # resource explicitly below.
+          brew update-python-resources --exclude-packages=onnxruntime hol-guard
 
           FORMULA_PATH="$formula" python3 <<'PY'
           import json
