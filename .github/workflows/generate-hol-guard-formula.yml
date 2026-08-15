@@ -18,8 +18,9 @@ jobs:
       HOL_GUARD_VERSION: 2.2.88
       HOL_GUARD_URL: https://github.com/hashgraph-online/hol-guard/releases/download/v2.2.88/hol_guard-2.2.88.tar.gz
       HOL_GUARD_SHA256: 6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc
+      ONNXRUNTIME_VERSION: 1.27.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -28,6 +29,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          test "$(uname -m)" = "arm64"
           brew tap homebrew/core --force
           core="$(brew --repository homebrew/core)"
           formula="$core/Formula/h/hol-guard.rb"
@@ -38,21 +40,43 @@ jobs:
           # Ensure the release artifact is exactly the one independently verified.
           grep -q "sha256 \"$HOL_GUARD_SHA256\"" "$formula"
 
-          brew update-python-resources hol-guard
+          # ONNX Runtime only publishes platform wheels. Generate every source-backed
+          # dependency normally and add the verified wheel explicitly below.
+          brew update-python-resources hol-guard --exclude-packages=onnxruntime
 
           FORMULA_PATH="$formula" python3 <<'PY'
+          import json
           import os
           import re
+          import urllib.request
           from pathlib import Path
 
           path = Path(os.environ["FORMULA_PATH"])
           text = path.read_text()
 
-          text = re.sub(r'^  desc ".*"$', '  desc "Local-first runtime security and antivirus for AI coding agents"', text, count=1, flags=re.M)
-          text = re.sub(r'^  homepage ".*"$', '  homepage "https://hol.org/guard/security"', text, count=1, flags=re.M)
+          text = re.sub(
+              r'^  desc ".*"$',
+              '  desc "Local-first runtime security and antivirus for AI coding agents"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          text = re.sub(
+              r'^  homepage ".*"$',
+              '  homepage "https://hol.org/guard/security"',
+              text,
+              count=1,
+              flags=re.M,
+          )
 
           if re.search(r'^  license ', text, flags=re.M):
-              text = re.sub(r'^  license .+$', '  license "Apache-2.0"', text, count=1, flags=re.M)
+              text = re.sub(
+                  r'^  license .+$',
+                  '  license "Apache-2.0"',
+                  text,
+                  count=1,
+                  flags=re.M,
+              )
           else:
               text = text.replace(
                   '  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n',
@@ -72,17 +96,82 @@ jobs:
               '  depends_on "rust" => :build\n'
               '  depends_on "libyaml"\n'
               '  depends_on "openssl@3"\n'
-              '  depends_on "python@3.13"\n'
+              '  depends_on "python@3.14"\n\n'
+              '  on_macos do\n'
+              '    depends_on arch: :arm64\n'
+              '    depends_on macos: :sonoma\n'
+              '  end\n'
           )
           text = re.sub(r'(?:^  depends_on "python@[^"]+".*\n)+', '', text, flags=re.M)
           first_resource = re.search(r'^  resource ', text, flags=re.M)
-          if first_resource and 'depends_on "python@3.13"' not in text:
+          if first_resource and 'depends_on "python@3.14"' not in text:
               text = text[:first_resource.start()] + dependency_block + '\n' + text[first_resource.start():]
+
+          if not re.search(r'^  pypi_packages ', text, flags=re.M):
+              first_resource = re.search(r'^  resource ', text, flags=re.M)
+              if not first_resource:
+                  raise RuntimeError("generated formula has no Python resources")
+              text = (
+                  text[:first_resource.start()]
+                  + '  pypi_packages exclude_packages: %w[onnxruntime]\n\n'
+                  + text[first_resource.start():]
+              )
+
+          version = os.environ["ONNXRUNTIME_VERSION"]
+          with urllib.request.urlopen(
+              f"https://pypi.org/pypi/onnxruntime/{version}/json",
+              timeout=30,
+          ) as response:
+              files = json.load(response)["urls"]
+
+          def choose(*parts: str) -> dict:
+              matches = [
+                  item
+                  for item in files
+                  if item["packagetype"] == "bdist_wheel"
+                  and all(part in item["filename"] for part in parts)
+                  and "cp314t" not in item["filename"]
+              ]
+              if len(matches) != 1:
+                  names = [item["filename"] for item in matches]
+                  raise RuntimeError(f"expected one ONNX Runtime wheel for {parts}, got {names}")
+              return matches[0]
+
+          mac_arm = choose("cp314-cp314-macosx", "arm64.whl")
+          linux_arm = choose("cp314-cp314-manylinux", "aarch64.whl")
+          linux_intel = choose("cp314-cp314-manylinux", "x86_64.whl")
+
+          onnx_block = "\n".join([
+              '  resource "onnxruntime" do',
+              '    on_macos do',
+              f'      url "{mac_arm["url"]}"',
+              f'      sha256 "{mac_arm["digests"]["sha256"]}"',
+              '    end',
+              '',
+              '    on_linux do',
+              '      on_arm do',
+              f'        url "{linux_arm["url"]}"',
+              f'        sha256 "{linux_arm["digests"]["sha256"]}"',
+              '      end',
+              '',
+              '      on_intel do',
+              f'        url "{linux_intel["url"]}"',
+              f'        sha256 "{linux_intel["digests"]["sha256"]}"',
+              '      end',
+              '    end',
+              '  end',
+              '',
+          ])
+          first_resource = re.search(r'^  resource ', text, flags=re.M)
+          if not first_resource:
+              raise RuntimeError("generated formula has no insertion point")
+          text = text[:first_resource.start()] + onnx_block + '\n' + text[first_resource.start():]
 
           test_block = "\n".join([
               "  test do",
               '    assert_match "usage", shell_output("#{bin}/hol-guard --help").downcase',
               '    assert_match "usage", shell_output("#{bin}/plugin-scanner --help").downcase',
+              '    system libexec/"bin/python", "-c", "import onnxruntime; import magika"',
               "  end",
               "",
           ])
