@@ -1,0 +1,113 @@
+name: Generate HOL Guard formula
+
+on:
+  push:
+    branches:
+      - hol-guard-2.2.88
+    paths:
+      - .github/workflows/generate-hol-guard-formula.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      HOL_GUARD_VERSION: 2.2.88
+      HOL_GUARD_URL: https://github.com/hashgraph-online/hol-guard/releases/download/v2.2.88/hol_guard-2.2.88.tar.gz
+      HOL_GUARD_SHA256: 6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate formula and Python resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          brew tap homebrew/core --force
+          core="$(brew --repository homebrew/core)"
+          formula="$core/Formula/h/hol-guard.rb"
+          rm -f "$formula"
+
+          brew create --python --set-name=hol-guard "$HOL_GUARD_URL"
+
+          # Ensure the release artifact is exactly the one independently verified.
+          grep -q "sha256 \"$HOL_GUARD_SHA256\"" "$formula"
+
+          brew update-python-resources hol-guard
+
+          FORMULA_PATH="$formula" python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["FORMULA_PATH"])
+          text = path.read_text()
+
+          text = re.sub(r'^  desc ".*"$', '  desc "Local-first runtime security and antivirus for AI coding agents"', text, count=1, flags=re.M)
+          text = re.sub(r'^  homepage ".*"$', '  homepage "https://hol.org/guard/security"', text, count=1, flags=re.M)
+
+          if re.search(r'^  license ', text, flags=re.M):
+              text = re.sub(r'^  license .+$', '  license "Apache-2.0"', text, count=1, flags=re.M)
+          else:
+              text = text.replace('  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n',
+                                  '  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n  license "Apache-2.0"\n')
+
+          if not re.search(r'^  head ', text, flags=re.M):
+              marker = '  license "Apache-2.0"\n'
+              text = text.replace(marker, marker + '  head "https://github.com/hashgraph-online/hol-guard.git", branch: "main"\n', 1)
+
+          # HOL Guard and transitive dependencies build native Python extensions.
+          dependency_block = (
+              '  depends_on "pkgconf" => :build\n'
+              '  depends_on "rust" => :build\n'
+              '  depends_on "libyaml"\n'
+              '  depends_on "openssl@3"\n'
+              '  depends_on "python@3.13"\n'
+          )
+          text = re.sub(r'(?:^  depends_on "python@[^"]+".*\n)+', '', text, flags=re.M)
+          first_resource = re.search(r'^  resource ', text, flags=re.M)
+          if first_resource and 'depends_on "python@3.13"' not in text:
+              text = text[:first_resource.start()] + dependency_block + '\n' + text[first_resource.start():]
+
+          # Keep the generated virtualenv install block, but replace a placeholder test.
+          test_block = '''  test do
+    assert_match "usage", shell_output("#{bin}/hol-guard --help").downcase
+    assert_match "usage", shell_output("#{bin}/plugin-scanner --help").downcase
+  end
+'''
+          if re.search(r'^  test do\n.*?^  end\n(?=end\n?$)', text, flags=re.M | re.S):
+              text = re.sub(r'^  test do\n.*?^  end\n(?=end\n?$)', test_block, text, count=1, flags=re.M | re.S)
+          else:
+              text = re.sub(r'\nend\n?$', '\n' + test_block + 'end\n', text)
+
+          path.write_text(text)
+          PY
+
+          mkdir -p "$GITHUB_WORKSPACE/Formula/h"
+          cp "$formula" "$GITHUB_WORKSPACE/Formula/h/hol-guard.rb"
+
+      - name: Audit and install from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew audit --new --strict --online hol-guard
+          brew install --build-from-source hol-guard
+          brew test hol-guard
+          hol-guard --help >/dev/null
+          plugin-scanner --help >/dev/null
+
+      - name: Commit validated formula and remove generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/generate-hol-guard-formula.yml
+          git config user.name "Michael Kantor"
+          git config user.email "6068672+kantorcodes@users.noreply.github.com"
+          git add Formula/h/hol-guard.rb .github/workflows/generate-hol-guard-formula.yml
+          git commit -m "hol-guard 2.2.88 (new formula)"
+          git push origin HEAD:hol-guard-2.2.88
