@@ -1,0 +1,40 @@
+name: Correct HOL Guard resource exclusion syntax
+
+on:
+  push:
+    branches:
+      - hol-guard-2.2.88
+    paths:
+      - .github/workflows/fix-hol-guard-resource-exclusion.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Patch generator and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/generate-hol-guard-formula.yml')
+          text = path.read_text()
+          old = 'brew update-python-resources --exclude-packages=onnxruntime hol-guard'
+          new = 'brew update-python-resources --exclude-packages onnxruntime hol-guard'
+          if old not in text:
+              raise SystemExit('expected Homebrew command was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm -f .github/workflows/fix-hol-guard-resource-exclusion.yml
+          git config user.name "Michael Kantor"
+          git config user.email "6068672+kantorcodes@users.noreply.github.com"
+          git add .github/workflows/generate-hol-guard-formula.yml .github/workflows/fix-hol-guard-resource-exclusion.yml
+          git commit -m "fix: pass ONNX Runtime exclusion as an argument"
+          git push origin HEAD:hol-guard-2.2.88
