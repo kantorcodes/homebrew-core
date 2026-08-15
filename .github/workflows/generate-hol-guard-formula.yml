@@ -54,14 +54,19 @@ jobs:
           if re.search(r'^  license ', text, flags=re.M):
               text = re.sub(r'^  license .+$', '  license "Apache-2.0"', text, count=1, flags=re.M)
           else:
-              text = text.replace('  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n',
-                                  '  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n  license "Apache-2.0"\n')
+              text = text.replace(
+                  '  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n',
+                  '  sha256 "6b2435e919c10483e1f93b1f2d01bb8d8014cc62de58d7824b13b09308b659fc"\n  license "Apache-2.0"\n',
+              )
 
           if not re.search(r'^  head ', text, flags=re.M):
               marker = '  license "Apache-2.0"\n'
-              text = text.replace(marker, marker + '  head "https://github.com/hashgraph-online/hol-guard.git", branch: "main"\n', 1)
+              text = text.replace(
+                  marker,
+                  marker + '  head "https://github.com/hashgraph-online/hol-guard.git", branch: "main"\n',
+                  1,
+              )
 
-          # HOL Guard and transitive dependencies build native Python extensions.
           dependency_block = (
               '  depends_on "pkgconf" => :build\n'
               '  depends_on "rust" => :build\n'
@@ -74,14 +79,21 @@ jobs:
           if first_resource and 'depends_on "python@3.13"' not in text:
               text = text[:first_resource.start()] + dependency_block + '\n' + text[first_resource.start():]
 
-          # Keep the generated virtualenv install block, but replace a placeholder test.
-          test_block = '''  test do
-    assert_match "usage", shell_output("#{bin}/hol-guard --help").downcase
-    assert_match "usage", shell_output("#{bin}/plugin-scanner --help").downcase
-  end
-'''
+          test_block = "\n".join([
+              "  test do",
+              '    assert_match "usage", shell_output("#{bin}/hol-guard --help").downcase',
+              '    assert_match "usage", shell_output("#{bin}/plugin-scanner --help").downcase',
+              "  end",
+              "",
+          ])
           if re.search(r'^  test do\n.*?^  end\n(?=end\n?$)', text, flags=re.M | re.S):
-              text = re.sub(r'^  test do\n.*?^  end\n(?=end\n?$)', test_block, text, count=1, flags=re.M | re.S)
+              text = re.sub(
+                  r'^  test do\n.*?^  end\n(?=end\n?$)',
+                  test_block,
+                  text,
+                  count=1,
+                  flags=re.M | re.S,
+              )
           else:
               text = re.sub(r'\nend\n?$', '\n' + test_block + 'end\n', text)
 
